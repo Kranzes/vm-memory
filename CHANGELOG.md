@@ -1,5 +1,11 @@
 # Changelog
 
+## Upcoming version
+
+### Fixed
+
+- \[[#NNN](https://github.com/rust-vmm/vm-memory/pull/NNN)\] Build `backend-mmap` on FreeBSD and DragonFly, which have no `MAP_NORESERVE`
+
 ## 0.18.0
 
 ### Changed

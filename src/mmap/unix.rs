@@ -44,6 +44,13 @@ pub enum Error {
 
 pub type Result<T> = result::Result<T, Error>;
 
+// FreeBSD and DragonFly never implemented `MAP_NORESERVE` and no longer define it. Their mmap(2)
+// ignores the old bit, so 0 behaves the same.
+#[cfg(not(any(target_os = "freebsd", target_os = "dragonfly")))]
+const MAP_NORESERVE: i32 = libc::MAP_NORESERVE;
+#[cfg(any(target_os = "freebsd", target_os = "dragonfly"))]
+const MAP_NORESERVE: i32 = 0;
+
 /// A factory struct to build `MmapRegion` objects.
 #[derive(Debug)]
 pub struct MmapRegionBuilder<B = ()> {
@@ -239,7 +246,7 @@ impl<B: NewBitmap> MmapRegion<B> {
     pub fn new(size: usize) -> Result<Self> {
         MmapRegionBuilder::new_with_bitmap(size, B::with_len(size))
             .with_mmap_prot(libc::PROT_READ | libc::PROT_WRITE)
-            .with_mmap_flags(libc::MAP_ANONYMOUS | libc::MAP_NORESERVE | libc::MAP_PRIVATE)
+            .with_mmap_flags(libc::MAP_ANONYMOUS | MAP_NORESERVE | libc::MAP_PRIVATE)
             .build()
     }
 
@@ -253,7 +260,7 @@ impl<B: NewBitmap> MmapRegion<B> {
         MmapRegionBuilder::new_with_bitmap(size, B::with_len(size))
             .with_file_offset(file_offset)
             .with_mmap_prot(libc::PROT_READ | libc::PROT_WRITE)
-            .with_mmap_flags(libc::MAP_NORESERVE | libc::MAP_SHARED)
+            .with_mmap_flags(MAP_NORESERVE | libc::MAP_SHARED)
             .build()
     }
 
@@ -473,7 +480,7 @@ mod tests {
         assert_eq!(r.prot(), libc::PROT_READ | libc::PROT_WRITE);
         assert_eq!(
             r.flags(),
-            libc::MAP_ANONYMOUS | libc::MAP_NORESERVE | libc::MAP_PRIVATE
+            libc::MAP_ANONYMOUS | MAP_NORESERVE | libc::MAP_PRIVATE
         );
     }
 
@@ -489,7 +496,7 @@ mod tests {
         assert_eq!(r.prot(), libc::PROT_READ | libc::PROT_WRITE);
         assert_eq!(
             r.flags(),
-            libc::MAP_ANONYMOUS | libc::MAP_NORESERVE | libc::MAP_PRIVATE
+            libc::MAP_ANONYMOUS | MAP_NORESERVE | libc::MAP_PRIVATE
         );
         assert_eq!(r.is_hugetlbfs(), None);
 
@@ -500,7 +507,7 @@ mod tests {
         assert_eq!(r.prot(), libc::PROT_READ | libc::PROT_WRITE);
         assert_eq!(
             r.flags(),
-            libc::MAP_ANONYMOUS | libc::MAP_NORESERVE | libc::MAP_PRIVATE
+            libc::MAP_ANONYMOUS | MAP_NORESERVE | libc::MAP_PRIVATE
         );
         assert_eq!(r.is_hugetlbfs(), Some(false));
 
@@ -511,7 +518,7 @@ mod tests {
         assert_eq!(r.prot(), libc::PROT_READ | libc::PROT_WRITE);
         assert_eq!(
             r.flags(),
-            libc::MAP_ANONYMOUS | libc::MAP_NORESERVE | libc::MAP_PRIVATE
+            libc::MAP_ANONYMOUS | MAP_NORESERVE | libc::MAP_PRIVATE
         );
         assert_eq!(r.is_hugetlbfs(), Some(true));
     }
@@ -529,7 +536,7 @@ mod tests {
         assert_eq!(r.size(), buf1.len() - offset);
         assert_eq!(r.file_offset().unwrap().start(), offset as u64);
         assert_eq!(r.prot(), libc::PROT_READ | libc::PROT_WRITE);
-        assert_eq!(r.flags(), libc::MAP_NORESERVE | libc::MAP_SHARED);
+        assert_eq!(r.flags(), MAP_NORESERVE | libc::MAP_SHARED);
 
         let buf2 = unsafe { slice::from_raw_parts(r.as_ptr(), buf1.len() - offset) };
         assert_eq!(&buf1[offset..], buf2);
@@ -542,7 +549,7 @@ mod tests {
         let a = Arc::new(TempFile::new().unwrap().into_file());
 
         let prot = libc::PROT_READ | libc::PROT_WRITE;
-        let flags = libc::MAP_NORESERVE | libc::MAP_PRIVATE;
+        let flags = MAP_NORESERVE | libc::MAP_PRIVATE;
         let offset = 4096;
         let size = 1000;
 
@@ -567,14 +574,17 @@ mod tests {
         // Let's resize the file.
         assert_eq!(unsafe { libc::ftruncate(a.as_raw_fd(), 1024 * 10) }, 0);
 
-        // The offset is not properly aligned.
-        let r = MmapRegion::build(
-            Some(FileOffset::from_arc(a.clone(), offset - 1)),
-            size,
-            prot,
-            flags,
-        );
-        assert_eq!(r.unwrap_err().raw_os_error(), libc::EINVAL);
+        // The offset is not properly aligned. FreeBSD and DragonFly map it anyway.
+        #[cfg(not(any(target_os = "freebsd", target_os = "dragonfly")))]
+        {
+            let r = MmapRegion::build(
+                Some(FileOffset::from_arc(a.clone(), offset - 1)),
+                size,
+                prot,
+                flags,
+            );
+            assert_eq!(r.unwrap_err().raw_os_error(), libc::EINVAL);
+        }
 
         // The build should be successful now.
         let r =
@@ -583,7 +593,7 @@ mod tests {
         assert_eq!(r.size(), size);
         assert_eq!(r.file_offset().unwrap().start(), offset);
         assert_eq!(r.prot(), libc::PROT_READ | libc::PROT_WRITE);
-        assert_eq!(r.flags(), libc::MAP_NORESERVE | libc::MAP_PRIVATE);
+        assert_eq!(r.flags(), MAP_NORESERVE | libc::MAP_PRIVATE);
         assert!(r.owned());
 
         let region_size = 0x10_0000;
@@ -604,7 +614,7 @@ mod tests {
         let addr = 0;
         let size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) as usize };
         let prot = libc::PROT_READ | libc::PROT_WRITE;
-        let flags = libc::MAP_NORESERVE | libc::MAP_PRIVATE;
+        let flags = MAP_NORESERVE | libc::MAP_PRIVATE;
 
         let r = unsafe { MmapRegion::build_raw((addr + 1) as *mut u8, size, prot, flags) };
         assert_matches!(r.unwrap_err(), Error::InvalidPointer);
@@ -613,7 +623,7 @@ mod tests {
 
         assert_eq!(r.size(), size);
         assert_eq!(r.prot(), libc::PROT_READ | libc::PROT_WRITE);
-        assert_eq!(r.flags(), libc::MAP_NORESERVE | libc::MAP_PRIVATE);
+        assert_eq!(r.flags(), MAP_NORESERVE | libc::MAP_PRIVATE);
         assert!(!r.owned());
     }
 
